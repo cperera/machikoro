@@ -14,6 +14,9 @@ class Player:
         self.establishments = {Card.WHEAT_FIELD: 1,
                                Card.BAKERY: 1}
         self.stash = 3
+        
+    def __repr__(self):
+        return self.name
 
 class EstablishmentIncomeRestriction(enum.Enum):
     SELF = enum.auto()
@@ -43,6 +46,28 @@ def initialize_marketplace():
     market.update(market2)
     return market
 
+def gains(playerToCheck, activePlayer, dieRoll):
+    gainEstablishments = {1: [Card.WHEAT_FIELD],
+                          2: [Card.RANCH, Card.BAKERY], 
+                          3: [Card.BAKERY],
+                          4: [Card.CONVENIENCE_STORE]}
+    totalGains = 0
+
+    for establishment in gainEstablishments.get(dieRoll, []):
+        if playerToCheck == activePlayer or establishment.value.restriction != EstablishmentIncomeRestriction.SELF:
+            totalGains += playerToCheck.establishments.get(establishment, 0) * establishment.value.amount
+
+    return totalGains
+
+def stolen(playerToCheck, robbedPlayer, dieRoll):
+    stealEstablishments = {3: [Card.CAFE]}
+    amountStolen = 0
+    for establishment in stealEstablishments.get(dieRoll, []):
+         amountStolen += playerToCheck.establishments.get(establishment, 0)
+    amountStolen = min(amountStolen, robbedPlayer.stash)
+    return amountStolen
+
+# here, the "players" list is counterclockwise around the table (reverse turn order)
 def income(playerToCheck, activePlayer, players, dieRoll):
     lossEstablishments = {3: [Card.CAFE]}
     gainEstablishments = {1: [Card.WHEAT_FIELD],
@@ -51,27 +76,25 @@ def income(playerToCheck, activePlayer, players, dieRoll):
                           4: [Card.CONVENIENCE_STORE]}
     # Losing Money to Other Players First
     lost = 0
-    stolen = 0
+
+    amountStolen = 0
 
     # How much active player loses
-    for establishment in lossEstablishments.get(dieRoll,[]):
+    # This should be handled by the calling context. Shouldn't explicitly count everyone here
+    # Just need to get the tests to pass in this refactor for now
+    if playerToCheck == activePlayer:
         for player in players:
             if player != activePlayer:
-                lost += player.establishments.get(establishment,0)
-        if playerToCheck != activePlayer:
-            stolen += playerToCheck.establishments.get(establishment, 0)
+                lost += stolen(player, activePlayer, dieRoll)
+    else:
+        amountStolen = stolen(playerToCheck, activePlayer, dieRoll)
 
     # Change in income is losses (down to zero but no lower)
     totalLosses = min(playerToCheck.stash, lost)
-
-    # Then add income from gaining establishments
-    totalGains = 0
-    for establishment in gainEstablishments.get(dieRoll, []):
-        if playerToCheck == activePlayer or establishment.value.restriction != EstablishmentIncomeRestriction.SELF:
-            totalGains += playerToCheck.establishments.get(establishment, 0) * establishment.value.amount
+    totalStolen = min(activePlayer.stash, amountStolen)
 
     # Then add income from thievery
-    totalGains += stolen
+    totalGains = gains(playerToCheck, activePlayer, dieRoll) + totalStolen
 
     return totalGains - totalLosses
 
@@ -112,58 +135,69 @@ def test_income():
     playA = initialize_player(testPlayerName)
     playB = initialize_player("Bradley")
 
-    players = [playA,playB]
     playA = reset_player(playA)
-    playB = reset_player(playB)
-    players = [playA,playB]
+    
     playA.establishments[Card.WHEAT_FIELD] = 1
-    assert(income(playA,playA,players,1) == 1)
+    assert(gains(playA,playA,1) == 1)
 
-    playA = reset_player(playA)
-    players = [playA,playB]
+    
     playA.establishments[Card.WHEAT_FIELD] = 2
-    assert(income(playA,playA,players,1) == 2)
+    assert(gains(playA,playA,1) == 2)
 
-    playA = reset_player(playA)
-    players = [playA,playB]
+    
     playA.establishments[Card.RANCH] = 2
-    assert(income(playA,playB,players,2) == 2)
+    assert(gains(playA,playB,2) == 2)
 
-    playA = reset_player(playA)
-    players = [playA,playB]
+    
     playA.establishments[Card.BAKERY] = 1
-    assert(income(playA,playA,players,3) == 1)
+    assert(gains(playA,playA,3) == 1)
 
     playA = reset_player(playA)
-    playB = reset_player(playB)
-    players = [playA,playB]
+    
     playB.establishments[Card.BAKERY] = 1
-    assert(income(playB,playA,players,3) == 0)
+    assert(gains(playB,playA,3) == 0)
 
     playA = reset_player(playA)
-    playB = reset_player(playB)
-    players = [playA,playB]
+    
     playA.establishments[Card.CONVENIENCE_STORE] = 1
-    assert(income(playA,playA,players,4) == 3)
+    assert(gains(playA,playA,4) == 3)
     
     playA = reset_player(playA)
-    playB = reset_player(playB)
-    players = [playA,playB]
+    
 
     playB.stash = 10
     playA.establishments[Card.CAFE] = 2
-    assert(income(playA,playB,players,3) == 2), "Cafe-related Thievery"
-    print ("Pay attention NOW!")
-    assert(income(playB,playB,players,3) == -2), "Player loses money upon rolling a 3 if another player has cafe(s)"
+    assert(stolen(playA,playB,3) == 2), "Cafe-related Thievery"
     playB.stash = 0
-    assert(income(playB,playB,players,3) == 0)
-
-    # 8-Ball's turn to write a failing test for Chrisantha
+    assert(stolen(playA,playB,3) == 0), "Player can't lose more than they have"
+    playB.stash = 1
+    assert(stolen(playA,playB,3) == 1), "Player loses only as much as they have"
 
     playA = reset_player(playA)
-    players = [playA,playB]
+    
+
+    playA.stash = 0
+    playB.establishments[Card.CAFE] = 3
+    assert(stolen(playB,playA, 3) == 0), "Player should not take money if active player has no money to take"
+
+    
     playA.establishments[Card.BAKERY] = 2
-    assert(income(playA,playA,players,2) == 2)
+    assert(gains(playA,playA,2) == 2)
+
+    # What happens if a player's roll results in both a Bakery and a Cafe being triggered?
+    playA = reset_player(playA)
+    playB = reset_player(playB)
+    playC = reset_player(initialize_player("Curmudgeon"))
+    
+    playB.establishments[Card.CAFE] = 3
+    playA.establishments[Card.BAKERY] = 2
+    playC.establishments[Card.CAFE] = 1
+    playA.stash = 1
+    assert(stolen(playB, playA, 3) == 1), "playB steals from playA"
+    playA.stash = 0
+    assert(stolen(playC, playA, 0) == 0), "playC gets nothing after playA already loses all moneys"
+    assert(gains(playA, playA, 3) == 2), "Player gets money from their bakeries"
+
 
 def reset_player(player):
     new_player = initialize_player(player.name)
